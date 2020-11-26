@@ -1,0 +1,12 @@
+*.fastq
+*.fasta
+work/
+output/
+.gitignore
+.nextflow
+.nextflow*
+input_data/
+bin/.idea
+bin/.Rhistory
+.idea
+.Rhistory
