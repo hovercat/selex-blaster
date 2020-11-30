@@ -37,12 +37,13 @@ By default new directories are created containing resulting files and a cache.
     .
     ├── bin/                # R and Python scripts for analysis
     ├── output_YOUREXPERIMENT/             
-    │   ├── analysis.ngs_quality/       # HTML-Files and plots on sequencing quality
-    │   ├── analysis.nt_distribution/   # HTML-Files and plots on nucleotide distribution on aptamers
-    │   ├── analysis.preprocessing/     # Plots and charts on loss during preprocessing
-    │   ├── analysis.selex_success/     # Plots and charts on aptamers enrichment
-    │   ├── fastx*                      # Directories with preprocessed FASTQ/FASTA files
-    │   ├── selex.aptamers.csv          # CSV chart containing all aptamers in the experiment
+    │   ├── dreme/     # Plots and charts on aptamers enrichment
+    │   ├── fimo/
+    │   ├── mcl/
+    │   ├── randomregions.derep.csv
+    │   ├── randomregions.derep.fasta
+    │   ├── randomregions.derep.resample.fasta
+    │   ├── aptamers.derep.fasta
     │   └── selex.aptamers.rpm.csv      # CSV chart containing all aptamers in the experiment, counted in reads per million
 
 ### Output 1
