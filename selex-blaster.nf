@@ -105,6 +105,7 @@ Folding Aptamers
 ========================================================    
 """
 process folding {
+    publishDir "${params.output_dir}/fold"
     cpus params.cpus
 
     input:
@@ -112,6 +113,7 @@ process folding {
     output:
         tuple file("randomregion.unique.fasta"), file("aptamer.unique.fasta"), file("aptamer.unique.mfe_masked.fasta"), file("aptamer.unique.mea_masked.fasta") into folded_to_blastdb
         file("aptamer.unique.mea_masked.fasta") into folded_to_blastquery
+        file("aptamer.unique.mea_masked.fasta") into folded_mast
     script:
     """
          RNAfold --paramFile=$params.RNAfold_mathews2004_dna \
@@ -256,6 +258,7 @@ process do_cluster_motifs {
 Finding Motifs in their clusters
 ========================================================
 """
+library_ch = Channel.fromPath(params.input_dir + "/R0.fasta" , checkIfExists:true, type: "file").collect()
 process extract_cluster_motifs {
     conda 'python=2 bioconda::meme'
     maxForks params.cpus
@@ -265,13 +268,14 @@ process extract_cluster_motifs {
     
     input:
         tuple file("randomregion.unique.fasta"), file("aptamer.unique.fasta") from dereplicated_selex_meme
+        file(library) from library_ch
         each file(cluster) from clusters_fasta
     output:
-        tuple file("${cluster.baseName}.dreme.html"), file("aptamer.unique.10000.fasta"), file(cluster), file("randomregion.unique.fasta"), file("aptamer.unique.fasta") into dreme
+        tuple file("${cluster.baseName}.dreme.html"), file("library_1000.fasta"), file(cluster), file("randomregion.unique.fasta"), file("aptamer.unique.fasta") into dreme
     script:
     """
-        fasta-subsample aptamer.unique.fasta 1000  > aptamer.unique.10000.fasta
-        dreme -o dreme -norc -dna -p ${cluster} -n aptamer.unique.10000.fasta -m 5 -e 0.0005 -mink 6
+        fasta-subsample $library 1000  > library_1000.fasta
+        dreme -o dreme -norc -dna -p ${cluster} -n library_1000.fasta -mink 6
         mv dreme/dreme.html ${cluster.baseName}.dreme.html
     """
 }
@@ -280,22 +284,36 @@ process extract_cluster_motifs {
 fimo
 
 """
+process fimo_ {
+    input:
+        file("folded.mfe.fasta") from folded_mast
+    output:
+        file("hardmasked.mfe.fasta") into folded_mast_
+    script:
+    """
+        mask_lowercase_fasta.py -i folded.mfe.fasta -c > hardmasked.mfe.fasta
+    """
+}
+
 process fimo {
+    errorStrategy 'ignore'
     conda 'python=2 bioconda::meme'
     maxForks params.cpus
     publishDir "${params.output_dir}/fimo/",
         mode: "copy"
     
     input:
+        file("hardmasked.mfe.fasta") from folded_mast_
         tuple file(dreme), file(control_fasta), file(cluster), file("randomregion.unique.fasta"), file("aptamer.unique.fasta") from dreme
     output:
-        file("${cluster.baseName}") into fimo
+        file("${cluster.baseName}/") into fimo
+        file(cluster) into fimo_fasta
     script:
     """
-        fimo --norc --thresh 0.002 -o ${cluster.baseName} $dreme randomregion.unique.fasta
-#        rm forward_fimo -r
-        rm ${cluster.baseName}/*.xml
-        rm ${cluster.html}/*.gff
+        #fimo --thresh 0.0002 --norc -o ${cluster.baseName} --bfile --motif-- $dreme randomregion.unique.fasta
+        mast -norc -bfile --uniform-- -remcorr -c 5 -ev 100000 -o ${cluster.baseName} $dreme hardmasked.mfe.fasta
+        #rm ${cluster.baseName}/*.xml
+        #rm ${cluster.baseName}/*.gff
     """
 }
 
