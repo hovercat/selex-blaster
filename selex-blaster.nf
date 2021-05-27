@@ -36,6 +36,21 @@ def get_round_id(String round_name) {
     else return params.round_order.indexOf(round_name);
 }
 
+    
+
+"""
+========================================================
+Make output directory if it doesn't exist
+========================================================    
+"""
+dir_output = file(params.output_dir)
+if (!dir_output.exists()) {
+    if (!dir_output.mkdir()) {
+        println("Couldn't create output directory.")
+    }
+}
+
+
 
 """
 ========================================================
@@ -52,51 +67,98 @@ fasta_input = Channel.fromPath(params.input_dir + "/" + params.fasta_pattern, ch
     .collect()
     
 process dereplicate_sequences {
+	conda 'pandas'
     publishDir "${params.output_dir}",
         mode: "copy"
         
     input:
         file(fasta) from fasta_input
     output:
-        file("randomregion.unique.fasta") into dereplicated_selex
-        file("selex.aptamers.raw.csv") into dereplicated_csv
+        file("randomregion.unique.fasta") into dereplicated_selex_db, dereplicated_selex_q, dereplicated_selex_asv
     script:
     """ 
         selex_dereplicate_fasta.py -o randomregion.unique.fasta -c selex.aptamers.raw.csv ${fasta}
+        
+        head -n 100000 randomregion.unique.fasta > randomregion.unique.fasta_
+        mv randomregion.unique.fasta_ randomregion.unique.fasta
     """
 }
-process draw_sample {
-    publishDir "${params.output_dir}",
-        mode: "copy"
-    conda 'python=2 bioconda::meme'
-    input:
-        file("randomregion.unique.fasta") from dereplicated_selex
-    output:
-        tuple file("randomregion.unique.resmpl.fasta"), file("aptamer.unique.fasta") into dereplicated_selex_smpl
-        tuple file("randomregion.unique.resmpl.fasta"), file("aptamer.unique.fasta") into dereplicated_selex_meme
-    script:
-    """ 
-        fasta-subsample randomregion.unique.fasta ${params.sample} > randomregion.unique.resmpl.fasta
-        if [ ${params.sample} -lt 1 ]
-        then
-            cp randomregion.unique.fasta randomregion.unique.resmpl.fasta
-        fi
-        sed '2~2s/^/${params.primer5}/;2~2s/\$/${params.primer3}/' randomregion.unique.resmpl.fasta > aptamer.unique.fasta
-    """
-}
-    
+library_ch = Channel.fromPath(params.input_dir + "/" + params.library + params.fasta_pattern , checkIfExists:true, type: "file").collect()
 
 """
-========================================================
-Make output directory if it doesn't exist
-========================================================    
+=========
+ASV Removal
+==========
 """
-dir_output = file(params.output_dir)
-if (!dir_output.exists()) {
-    if (!dir_output.mkdir()) {
-        println("Couldn't create output directory.")
-    }
+process asv_removal_blastdb {
+	conda 'bioconda::blast'
+
+    input:
+		file(derep_fasta) from dereplicated_selex_db
+    output:
+        file("blast_db*") into asv_blastdb
+    script:
+    """
+    	makeblastdb -in $derep_fasta -dbtype nucl -out blast_db
+    """
 }
+
+dereplicated_selex_q
+	.splitFasta(by: 1000, file:true)
+	.set { dereplicated_selex_q_split }
+
+process asv_removal_blastn {
+	conda 'bioconda::blast'
+	publishDir "${params.output_dir}/",
+	mode: "copy"
+
+    input:
+		file(blast_db) from asv_blastdb.collect()
+		each file(f) from dereplicated_selex_q_split
+    output:
+        file("blast.${f}.csv") into asv_removal_blastn_results
+    script:
+    """
+    	blastn -task blastn-short -query $f -num_threads 1 -evalue 0.05  -strand plus -db blast_db -outfmt 6 -gapopen 0 -gapextend 4 -penalty -3 -reward 2 > blast.${f}.csv 
+    """
+}
+
+process asv_concat_blastn_results {
+	conda 'bioconda::blast'
+	publishDir "${params.output_dir}/",
+	mode: "copy"
+
+    input:
+		file(blast_csv) from asv_removal_blastn_results.collect()
+    output:
+        file("blastn_results.csv") into asv_removal_blastn_results_concat
+    script:
+    """
+		find -L . -wholename './blast.*.csv' | sort | xargs cat > blastn_results.csv
+    """
+}
+
+
+
+
+process asv_extraction {
+	conda 'pandas networkx'
+	publishDir "${params.output_dir}/",
+	mode: "copy"
+
+    echo true
+    input:
+    	file(derep) from dereplicated_selex_asv
+		file(blastn_csv) from asv_removal_blastn_results_concat
+    output:
+         file("aptamers.clean.fasta") into dereplicated_asv_removed
+    script:
+    """
+		remove_pcr_duplicates.py -f $derep -b $blastn_csv -o aptamers.clean.fasta
+    """
+}
+
+
 
 
 """
@@ -104,80 +166,55 @@ if (!dir_output.exists()) {
 Folding Aptamers
 ========================================================    
 """
+
+
 process folding {
     publishDir "${params.output_dir}/fold"
     cpus params.cpus
 
     input:
-        tuple file("randomregion.unique.fasta"), file("aptamer.unique.fasta") from dereplicated_selex_smpl
+	    file(random_region_fasta) from dereplicated_asv_removed
     output:
-        tuple file("randomregion.unique.fasta"), file("aptamer.unique.fasta"), file("aptamer.unique.mfe_masked.fasta"), file("aptamer.unique.mea_masked.fasta") into folded_to_blastdb
-        file("aptamer.unique.mea_masked.fasta") into folded_to_blastquery
-        file("aptamer.unique.mea_masked.fasta") into folded_mast
+        file("aptamers.mfe.masked.fasta") into folded, folded_blast_query
     script:
     """
+         sed '2~2s/^/${params.primer5}/;2~2s/\$/${params.primer3}/' ${random_region_fasta} > aptamers.fasta
+         
          RNAfold --paramFile=$params.RNAfold_mathews2004_dna \
-            --noPS --noconv --noDP --partfunc=1 \
+            --noconv --noPS --noDP --partfunc=1 \
             --jobs=${params.cpus} \
             -T ${params.folding_temp} \
+            -i aptamers.fasta \
             --MEA \
-            -i aptamer.unique.fasta \
-            --outfile=aptamer.unique.vienna
+            --outfile=aptamers.vienna
             
-        awk 'BEGIN { RS = ">"; FS = "\\n|( \\\\( *)|)\\n" } { print \$1, "\\t", \$2, "\\t", \$3, "\\t", \$4 }' aptamer.unique.vienna > aptamer.unique.vienna.mfe
-        awk 'BEGIN { RS = ">"; FS = "\\n|(\\\\{(\\-|\\ |[0-9]+)|MEA=)" } { print \$1, "\\t", \$2, "\\t", \$7, "\\t", \$8 }' aptamer.unique.vienna > aptamer.unique.vienna.mea
-
-        stems_to_lower.py aptamer.unique.vienna.mfe aptamer.unique.mfe_masked.fasta
-        stems_to_lower.py aptamer.unique.vienna.mea aptamer.unique.mea_masked.fasta
+		awk 'BEGIN { RS = ">"; FS = "\\n|( \\\\( *)|)\\n" } { print \$1, "\\t", \$2, "\\t", \$3, "\\t", \$4 }' aptamers.vienna > aptamers.vienna.mfe
+       
+        stems_to_lower.py aptamers.vienna.mfe aptamers.mfe.masked.fasta
     """
 }
 
-
 """
 ========================================================
-Making a BLAST db from masked sequences
+BLAST 
 ========================================================
 """
-
-process make_blast_db {
+process makeblastdb {
     conda 'bioconda::blast'
     input:
-        tuple file("randomregion.unique.fasta"), file("aptamer.unique.fasta"), file("aptamer.unique.mfe_masked.fasta"), file("aptamer.unique.mea_masked.fasta") from folded_to_blastdb
+        file(aptamers_masked_fasta) from folded
     output:
-        file("blast_db_decontaminated*") into blast_db
+        file("blast_db*") into blast_db
     script:
     """
-        # Search for primer sequences contaminated with primers and remove them (TODO, necessary?)
-        # Make BLAST db with all sequences
-        convert2blastmask -in aptamer.unique.mea_masked.fasta -masking_algorithm repeat -masking_options "repeatmasker, default" -outfmt maskinfo_asn1_bin -out blast_db.mask
-        makeblastdb -in aptamer.unique.mea_masked.fasta -dbtype nucl -mask_data blast_db.mask -out blast_db
-        # Dummy primer fasta file
-        touch primers.fasta
-        echo '>${params.primer5}' >> primers.fasta
-        echo '${params.primer5}' >> primers.fasta
-        echo '>${params.primer3}' >> primers.fasta
-        echo '${params.primer3}' >> primers.fasta
-        # BLASTn search
-        blastn -task blastn-short -db blast_db -query primers.fasta -num_threads 1 -evalue 1000 -strand plus -reward 1 -penalty -4 -gapopen 1 -gapextend 2 -word_size 6 -db_hard_mask 40  -outfmt 6 > primer_contamination.csv
-        remove_contaminated_sequences.py -cont primer_contamination.csv -lib aptamer.unique.mea_masked.fasta -o aptamer.unique.mea_masked.decontaminated.fasta
-        
-        # Make BLAST db with decontaminated input
-        convert2blastmask -in aptamer.unique.mea_masked.decontaminated.fasta -masking_algorithm repeat -masking_options "repeatmasker, default" -outfmt maskinfo_asn1_bin -out blast_db_decontaminated.mask
-        makeblastdb -in aptamer.unique.mea_masked.decontaminated.fasta -dbtype nucl -mask_data blast_db_decontaminated.mask -out blast_db_decontaminated
+		 convert2blastmask -in ${aptamers_masked_fasta} -masking_algorithm repeat -masking_options "repeatmasker, default" -outfmt maskinfo_asn1_bin -out blast_db.mask
+         makeblastdb -in ${aptamers_masked_fasta} -dbtype nucl -mask_data blast_db.mask -out blast_db
     """
 }
 
-
-
-"""
-========================================================
-Searching the BLAST db for similarities
-========================================================
-"""
-folded_to_blastquery
-    .splitFasta(by: 100, file: "query.fasta")
-    //.take(30)
-    .set { folded_to_blastquery_split }
+folded_blast_query
+    .splitFasta(by: 1000, file: "query.fasta")
+    .set { folded_blast_query_split }
 
 process blast_motifs {
     conda 'bioconda::blast'
@@ -186,15 +223,15 @@ process blast_motifs {
     
     input:
         file(blast_db) from blast_db.collect()
-        each file(f) from folded_to_blastquery_split
+        each file(f) from folded_blast_query_split
     output:
         file("blast.${f}.csv") into blast_motifs_results
     script:
     """
-        blastn -task blastn-short -db blast_db_decontaminated -query $f \
+        blastn -task blastn-short -db blast_db -query $f \
             -num_threads 1 -strand plus \
             -reward 1 -penalty -4 -gapopen 1 -gapextend 2 \
-            -outfmt 6 -max_target_seqs 100 -db_hard_mask 40 -evalue 10000 \
+            -outfmt 6 -max_target_seqs 200 -db_hard_mask 40 -evalue 10000 \
             -lcase_masking > blast.${f}.csv
     """
 }
@@ -215,21 +252,18 @@ process prepare_cluster_motifs {
         tuple file("seq.mci"), file("seq.abc"), file("seq.tab") into mcl_preparation
     script:
     """
-        find -L . -type f -name 'blast.*.csv' -print0 | xargs -0 cat >> collect.blast.csv
-        exclude_selfhits.py --blast-file collect.blast.csv > collect.blast.exclselfhits.csv
-        # cp collect.blast.csv collect.blast.exclselfhits.csv
+    	# combine all blast results
+        find -L . -type f -name 'blast.*.csv' -print0 | xargs -0 cat >> collect.all_blast.csv
+        exclude_selfhits.py --blast-file collect.all_blast.csv > collect.blast.csv
         
-        # min_val=-\$(cut -f 4 collect.blast.exclselfhits.csv | sort -n | head -1 | tr -d '[:space:]')    
-        min_val=0
-        cut -f 1,2,4 collect.blast.exclselfhits.csv > seq.abc
-        mcxload -abc seq.abc --stream-mirror -stream-tf "add(\$min_val)" -o seq.mci -write-tab seq.tab
-#        mcxload -abc seq.abc --stream-mirror  -o seq.mci -write-tab seq.tab
+        cut -f 1,2,4 collect.blast.csv > seq.abc
+        mcxload -abc seq.abc --stream-mirror  -o seq.mci -write-tab seq.tab
     """
 }
 
 
 process do_cluster_motifs {
-    publishDir "${params.output_dir}/mcl",
+    publishDir "${params.output_dir}/I${params.inflation}.MCL/",
         mode: "copy"
     conda 'bioconda::mcl'
     cpus params.cpus
@@ -237,18 +271,16 @@ process do_cluster_motifs {
     
     input:
         tuple file("seq.mci"), file("seq.abc"), file("seq.tab") from mcl_preparation
-        val inflation from(1.4) // ,2, 2.6, 4)
     output:
-        file("${inflation}/c*.fasta") into clusters_fasta
+        file("c*.fasta") into clusters_fasta
     script:
     """
-        mcl seq.mci -I $inflation -te ${params.cpus} -o seq.mcl
+        mcl seq.mci -I ${params.inflation} -te ${params.cpus} -o seq.mcl
         mcxdump -icl seq.mcl -tabr seq.tab -o dump.seq.mci
-        mcl_to_fasta.py --min 1 --mcl-file dump.seq.mci
+        mcl_to_fasta.py --out-dir . --min 1 --mcl-file dump.seq.mci
         
         # move from ./clusters to ./
-        mkdir ${inflation}
-        find -L clusters -type f -name 'c*.fasta' -print0 | xargs -r0 mv -t ${inflation}/.
+        # find -L clusters -type f -name 'c*.fasta' -print0 | xargs -r0 mv -t ${params.inflation}/.
     """
 }
 
@@ -258,28 +290,86 @@ process do_cluster_motifs {
 Finding Motifs in their clusters
 ========================================================
 """
-library_ch = Channel.fromPath(params.input_dir + "/R0.fasta" , checkIfExists:true, type: "file").collect()
+process fold_library {
+	maxForks 1
+	cpus params.cpus
+	
+	input:
+		file(library) from library_ch
+	output:
+		file("library.mfe.masked.fasta") into library_folded
+	
+	script:
+	"""
+		sed '2~2s/^/${params.primer5}/;2~2s/\$/${params.primer3}/' ${library} > library.fasta
+         
+         RNAfold --paramFile=$params.RNAfold_mathews2004_dna \
+            --noconv --noPS --noDP --partfunc=1 \
+            --jobs=${params.cpus} \
+            -T ${params.folding_temp} \
+            -i library.fasta \
+            --MEA \
+            --outfile=library.vienna
+            
+		awk 'BEGIN { RS = ">"; FS = "\\n|( \\\\( *)|)\\n" } { print \$1, "\\t", \$2, "\\t", \$3, "\\t", \$4 }' library.vienna > library.vienna.mfe
+       
+        stems_to_lower.py library.vienna.mfe library.mfe.masked.fasta
+	"""
+}
+
 process extract_cluster_motifs {
-    conda 'python=2 bioconda::meme'
+    conda 'bioconda::meme'
     maxForks params.cpus
-    publishDir "${params.output_dir}/dreme",
-        pattern: "*dreme.html",
+    publishDir "${params.output_dir}/streme",
+        pattern: "*streme.html",
         mode: "copy"
     
     input:
-        tuple file("randomregion.unique.fasta"), file("aptamer.unique.fasta") from dereplicated_selex_meme
-        file(library) from library_ch
+        file(library) from library_folded
         each file(cluster) from clusters_fasta
     output:
-        tuple file("${cluster.baseName}.dreme.html"), file("library_1000.fasta"), file(cluster), file("randomregion.unique.fasta"), file("aptamer.unique.fasta") into dreme
+        tuple file("${cluster.baseName}.streme.html"), file("library_10000.fasta"), file(cluster) into streme
     script:
     """
-        fasta-subsample $library 1000  > library_1000.fasta
-        dreme -o dreme -norc -dna -p ${cluster} -n library_1000.fasta -mink 6
-        mv dreme/dreme.html ${cluster.baseName}.dreme.html
+       echo '
+ALPHABET "DNA" RNA-LIKE
+
+# Core symbols
+A "Adenine" CC0000
+C "Cytosine" 0000CC
+T "Thymine" 008000
+G "Guanine" FFB300
+U "Uracil" 008000
+
+# Ambiguous symbols
+#U = T # alias Uracil to Thymine (permit U in input sequences)
+R = AG
+Y = CT
+#K = GT
+#M = AC
+#S = CG
+#W = AT
+B = CGT
+D = GAT
+H = ACT
+V = ACG
+N = ACGT # wildcard symbol
+#X = ACGT # wildcard symbol
+' > alphabet.file
+    
+    
+    	hardmask.py -i ${cluster} > cluster.masked.fasta
+    	hardmask.py -i ${library} > library.masked.fasta
+    	cutprimers.py -i library.masked.fasta -p1 ${params.primer5.length()} -p2 ${params.primer3.length()}  > library.rr.masked.fasta
+    
+        fasta-subsample library.rr.masked.fasta 10000  > library_10000.fasta
+        streme --alph alphabet.file --minw 5 --maxw 16 --o streme --p cluster.masked.fasta --n library_10000.fasta 
+        mv streme/streme.html ${cluster.baseName}.streme.html
     """
 }
 
+
+/*
 """
 fimo
 
@@ -315,6 +405,6 @@ process fimo {
         #rm ${cluster.baseName}/*.xml
         #rm ${cluster.baseName}/*.gff
     """
-}
+}*/
 
 

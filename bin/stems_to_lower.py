@@ -42,7 +42,8 @@ for line in fold_file:
             seq_lc.append(seq[i])
 
     lowercase_fasta.write(
-        ">{}\n".format(line_spl[0])  # NAME
+        #">{}\n".format(line_spl[0])  # NAME
+        ">{}\n".format(''.join(seq_lc[23:-23]))  # NAME
     )
 
     lowercase_fasta.write(
