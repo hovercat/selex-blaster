@@ -79,8 +79,8 @@ process dereplicate_sequences {
     """ 
         selex_dereplicate_fasta.py -o randomregion.unique.fasta -c selex.aptamers.raw.csv ${fasta}
         
-        head -n 100000 randomregion.unique.fasta > randomregion.unique.fasta_
-        mv randomregion.unique.fasta_ randomregion.unique.fasta
+        #head -n 100000 randomregion.unique.fasta > randomregion.unique.fasta_
+        #mv randomregion.unique.fasta_ randomregion.unique.fasta
     """
 }
 library_ch = Channel.fromPath(params.input_dir + "/" + params.library + params.fasta_pattern , checkIfExists:true, type: "file").collect()
@@ -175,7 +175,8 @@ process folding {
     input:
 	    file(random_region_fasta) from dereplicated_asv_removed
     output:
-        file("aptamers.mfe.masked.fasta") into folded, folded_blast_query
+        file("aptamers.mfe.masked.fasta") into folded
+        file("aptamers.hardmasked.fasta") into folded_blast_query
     script:
     """
          sed '2~2s/^/${params.primer5}/;2~2s/\$/${params.primer3}/' ${random_region_fasta} > aptamers.fasta
@@ -191,6 +192,7 @@ process folding {
 		awk 'BEGIN { RS = ">"; FS = "\\n|( \\\\( *)|)\\n" } { print \$1, "\\t", \$2, "\\t", \$3, "\\t", \$4 }' aptamers.vienna > aptamers.vienna.mfe
        
         stems_to_lower.py aptamers.vienna.mfe aptamers.mfe.masked.fasta
+        lower_to_N.py aptamers.mfe.masked.fasta > aptamers.hardmasked.fasta
     """
 }
 
@@ -231,7 +233,7 @@ process blast_motifs {
         blastn -task blastn-short -db blast_db -query $f \
             -num_threads 1 -strand plus \
             -reward 1 -penalty -4 -gapopen 1 -gapextend 2 \
-            -outfmt 6 -max_target_seqs 200 -db_hard_mask 40 -evalue 10000 \
+            -outfmt 6 -max_target_seqs 200 -db_hard_mask 40 -evalue 20000 \
             -lcase_masking > blast.${f}.csv
     """
 }
@@ -328,7 +330,7 @@ process extract_cluster_motifs {
         file(library) from library_folded
         each file(cluster) from clusters_fasta
     output:
-        tuple file("${cluster.baseName}.streme.html"), file("library_10000.fasta"), file(cluster) into streme
+        tuple file("${cluster.baseName}.streme.html"), file("library_subsampled.fasta"), file(cluster) into streme
     script:
     """
        echo '
@@ -362,8 +364,8 @@ N = ACGT # wildcard symbol
     	hardmask.py -i ${library} > library.masked.fasta
     	cutprimers.py -i library.masked.fasta -p1 ${params.primer5.length()} -p2 ${params.primer3.length()}  > library.rr.masked.fasta
     
-        fasta-subsample library.rr.masked.fasta 10000  > library_10000.fasta
-        streme --alph alphabet.file --minw 5 --maxw 16 --o streme --p cluster.masked.fasta --n library_10000.fasta 
+        fasta-subsample library.rr.masked.fasta ${params.subsample_library}  > library_subsampled.fasta
+        streme --alph alphabet.file --minw 5 --maxw 16 --o streme --p cluster.masked.fasta --n library_subsampled.fasta
         mv streme/streme.html ${cluster.baseName}.streme.html
     """
 }
