@@ -1,3 +1,5 @@
+Disclaimer: This pipeline ist still under construction and not working properly yet. Please come back in January 2020. :)
+
 # NextFlow Pipeline selex-blaster
 The NextFlow pipeline *selex-blaster* is performing motif-search and clustering on aptamer pools gathered in SELEX.
 
@@ -13,17 +15,6 @@ The BLAST results are then clustered using the MCL algorithm (Markov Cluster Alg
 DREME, a discriminative derivate of the MEME-algorithm, is then used on finding the motif sequence of every cluster.
 The found motifs are searched again in the aptamer pool. (I am not clear if this is good or bad)
 These found sequences are then used for enrichment analysis.
-
-I just think, that it would be cool, to just take the MCL results and check back in the BLAST results how close each aptamer is to any other.
-If two clusters have a high interconnectivity we can extract that and use it for further analysis. Also, we can use it to do a kind of dendrogram with the clusters.
-All in all, we have a sparse adjanceny matrix (or a network). kind of?
-
-This concludes the hard clustering part.
-
-We had to find insight in the data then, which gave the go to look what we could calculate with the data.
-Clustering is always a bit fuzzy.
-We thought, why not include all 
-
 
 ## Output
 
