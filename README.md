@@ -1,3 +1,5 @@
+Disclaimer: Do not use, as this does not work properly. The k-mer based graph generation currently leads to a much too fragmented graph to gain any real insights.
+
 # NextFlow Pipeline selex-blaster
 The NextFlow pipeline *selex-blaster* is performing motif-search and clustering on aptamer pools gathered in SELEX.
 
@@ -11,7 +13,7 @@ The result is a network of similarity scores between the aptamers, based on shor
 <!-- todo e-score? -->
 The BLAST results are then clustered using the MCL algorithm (Markov Cluster Algorithm).
 DREME, a discriminative derivate of the MEME-algorithm, is then used on finding the motif sequence of every cluster.
-The found motifs are searched again in the aptamer pool. (I am not clear if this is good or bad)
+The found motifs are searched again in the aptamer pool.
 These found sequences are then used for enrichment analysis.
 
 For further instructions please see:
